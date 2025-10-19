@@ -97,9 +97,9 @@ services:
         image: otel/opentelemetry-collector-contrib:0.128.0
         container_name: collector
         ports:
-            - '4317:4317'
-            - '4318:4318'
-            - '8888:8888'
+            - '4417:4317'
+            - '4418:4318'
+            - '8889:8888'
         depends_on:
             - clickhouse
             - kafka
@@ -184,7 +184,7 @@ services:
             REACT_APP_FRONTEND_URI: https://first.sume.one
             REACT_APP_PRIVATE_GRAPH_URI: https://first.sume.one:8082/private
             REACT_APP_PUBLIC_GRAPH_URI: https://first.sume.one:8082/public
-            REACT_APP_OTLP_ENDPOINT: https://first.sume.one:4318
+            REACT_APP_OTLP_ENDPOINT: https://first.sume.one:4418
             
             # Application Configuration
             REACT_APP_IN_DOCKER: 'true'
