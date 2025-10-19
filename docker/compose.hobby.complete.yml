@@ -28,7 +28,7 @@ services:
         logging: *local-logging
         container_name: redis
         image: redis:8.0.2
-        restart: on-failure
+        restart: unless-stopped
         volumes:
             - redis-data:/data
         ports:
@@ -37,18 +37,30 @@ services:
             - redis-server
             - --save 60 1
             - --loglevel warning
+        healthcheck:
+            test: ['CMD-SHELL', 'redis-cli ping | grep PONG || exit 1']
+            interval: 30s
+            timeout: 10s
+            retries: 5
 
     zookeeper:
         logging: *local-logging
         image: confluentinc/cp-zookeeper:7.7.0
         container_name: zookeeper
-        restart: on-failure
+        restart: unless-stopped
         volumes:
             - zoo-data:/var/lib/zookeeper/data
             - zoo-log:/var/lib/zookeeper/log
         environment:
             ZOOKEEPER_CLIENT_PORT: 2181
             ZOOKEEPER_TICK_TIME: 2000
+            ZOOKEEPER_INIT_LIMIT: 5
+            ZOOKEEPER_SYNC_LIMIT: 2
+        healthcheck:
+            test: ['CMD-SHELL', 'echo "ruok" | nc localhost 2181 | grep imok || exit 1']
+            interval: 30s
+            timeout: 10s
+            retries: 5
 
     kafka:
         logging: *local-logging
@@ -58,9 +70,10 @@ services:
             - kafka-data:/var/lib/kafka/data
         ports:
             - '9092:9092'
-        restart: on-failure
+        restart: unless-stopped
         depends_on:
-            - zookeeper
+            zookeeper:
+                condition: service_healthy
         environment:
             KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
             KAFKA_BROKER_ID: 1
@@ -75,22 +88,37 @@ services:
             KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
             KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
             KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+            # Consumer Group Stability
+            KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
+            KAFKA_GROUP_MAX_SESSION_TIMEOUT_MS: 1800000
+            KAFKA_GROUP_MIN_SESSION_TIMEOUT_MS: 6000
+        healthcheck:
+            test: ['CMD-SHELL', 'kafka-topics --bootstrap-server kafka:9092 --list || exit 1']
+            interval: 30s
+            timeout: 10s
+            retries: 5
+            start_period: 30s
 
     clickhouse:
         logging: *local-logging
         container_name: clickhouse
         image: clickhouse/clickhouse-server:24.3.15.72-alpine
-        restart: on-failure
+        restart: unless-stopped
         ports:
             - '8123:8123'
             - '9000:9000'
         volumes:
             - clickhouse-data:/var/lib/clickhouse
             - clickhouse-logs:/var/log/clickhouse-server
+        healthcheck:
+            test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:8123/ || exit 1']
+            interval: 30s
+            timeout: 10s
+            retries: 5
 
     collector:
         logging: *local-logging
-        restart: on-failure
+        restart: unless-stopped
         image: otel/opentelemetry-collector-contrib:0.128.0
         container_name: collector
         ports:
@@ -98,14 +126,16 @@ services:
             - '4418:4318'
             - '8889:8888'
         depends_on:
-            - clickhouse
-            - kafka
+            clickhouse:
+                condition: service_healthy
+            kafka:
+                condition: service_healthy
 
     # Application Services
     backend:
         container_name: backend
         image: ${BACKEND_IMAGE_NAME-ghcr.io/highlight/highlight-backend:latest}
-        restart: on-failure
+        restart: unless-stopped
         ports:
             - '8082:8082'
         volumes:
@@ -114,10 +144,12 @@ services:
             postgres:
                 condition: service_healthy
             redis:
-                condition: service_started
+                condition: service_healthy
             clickhouse:
-                condition: service_started
+                condition: service_healthy
             kafka:
+                condition: service_healthy
+            collector:
                 condition: service_started
         environment:
             # Domain Configuration
@@ -142,9 +174,12 @@ services:
             # ClickHouse Configuration
             CLICKHOUSE_ADDRESS: clickhouse:9000
             CLICKHOUSE_DATABASE: default
+            CLICKHOUSE_USERNAME: default
+            CLICKHOUSE_PASSWORD: ''
             
             # Kafka Configuration
             KAFKA_SERVERS: kafka:9092
+            KAFKA_TOPIC: dev
             
             # OpenTelemetry Configuration
             OTLP_ENDPOINT: http://collector:4318
@@ -156,18 +191,25 @@ services:
             SSL: 'false'
             ENVIRONMENT: dev
             
+            # Session Configuration
+            SESSION_RETENTION_DAYS: 30
+            
+            # Worker Configuration - Reduce to single instance
+            WORKER_MAX_MEMORY_THRESHOLD: 1GiB
+            
             # Hobby mode - no license required
             LICENSE_KEY: ''
         healthcheck:
             test: ['CMD-SHELL', 'curl -f http://localhost:8082/health || exit 1']
-            interval: 10s
-            timeout: 5s
-            retries: 5
+            interval: 30s
+            timeout: 10s
+            retries: 10
+            start_period: 60s
 
     frontend:
         container_name: frontend
         image: ${FRONTEND_IMAGE_NAME-ghcr.io/highlight/highlight-frontend:latest}
-        restart: on-failure
+        restart: unless-stopped
         ports:
             - '3001:3000'
             - '6006:6006'
@@ -185,7 +227,13 @@ services:
             # Application Configuration
             REACT_APP_IN_DOCKER: 'true'
             REACT_APP_AUTH_MODE: password
+            REACT_APP_DISABLE_ANALYTICS: 'false'
             SSL: 'false'
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -f http://localhost:3000 || exit 1']
+            interval: 30s
+            timeout: 10s
+            retries: 5
 
 volumes:
     highlight-data:
