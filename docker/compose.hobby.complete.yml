@@ -29,15 +29,12 @@ services:
         container_name: redis
         image: redis:8.0.2
         restart: on-failure
-        environment:
-            REDIS_PASSWORD: redispassword
         volumes:
             - redis-data:/data
         ports:
             - '6379:6379'
         command:
             - redis-server
-            - --requirepass redispassword
             - --save 60 1
             - --loglevel warning
 
@@ -141,7 +138,6 @@ services:
             
             # Redis Configuration
             REDIS_EVENTS_STAGING_ENDPOINT: redis:6379
-            REDIS_PASSWORD: redispassword
             
             # ClickHouse Configuration
             CLICKHOUSE_ADDRESS: clickhouse:9000
