@@ -1,0 +1,207 @@
+# Complete Highlight.io hobby deployment with all dependencies
+# This file combines infrastructure and application services for easy deployment
+
+x-local-logging: &local-logging
+    driver: local
+
+services:
+    # Infrastructure Services
+    postgres:
+        logging: *local-logging
+        container_name: postgres
+        image: ankane/pgvector:v0.5.1
+        restart: on-failure
+        ports:
+            - '5432:5432'
+        environment:
+            POSTGRES_HOST_AUTH_METHOD: trust
+            POSTGRES_DB: postgres
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U postgres']
+            interval: 5s
+            timeout: 5s
+            retries: 5
+
+    redis:
+        logging: *local-logging
+        container_name: redis
+        image: redis:8.0.2
+        restart: on-failure
+        environment:
+            REDIS_PASSWORD: redispassword
+        volumes:
+            - redis-data:/data
+        ports:
+            - '6379:6379'
+        command:
+            - redis-server
+            - --requirepass redispassword
+            - --save 60 1
+            - --loglevel warning
+
+    zookeeper:
+        logging: *local-logging
+        image: confluentinc/cp-zookeeper:7.7.0
+        container_name: zookeeper
+        restart: on-failure
+        volumes:
+            - zoo-data:/var/lib/zookeeper/data
+            - zoo-log:/var/lib/zookeeper/log
+        environment:
+            ZOOKEEPER_CLIENT_PORT: 2181
+            ZOOKEEPER_TICK_TIME: 2000
+
+    kafka:
+        logging: *local-logging
+        image: confluentinc/cp-kafka:7.7.0
+        container_name: kafka
+        volumes:
+            - kafka-data:/var/lib/kafka/data
+        ports:
+            - '9092:9092'
+        restart: on-failure
+        depends_on:
+            - zookeeper
+        environment:
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+            KAFKA_BROKER_ID: 1
+            KAFKA_CONSUMER_MAX_PARTITION_FETCH_BYTES: 268435456
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+            KAFKA_LOG_RETENTION_HOURS: 24
+            KAFKA_LOG_SEGMENT_BYTES: 268435456
+            KAFKA_MESSAGE_MAX_BYTES: 268435456
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_PRODUCER_MAX_REQUEST_SIZE: 268435456
+            KAFKA_REPLICA_FETCH_MAX_BYTES: 268435456
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+
+    clickhouse:
+        logging: *local-logging
+        container_name: clickhouse
+        image: clickhouse/clickhouse-server:24.3.15.72-alpine
+        restart: on-failure
+        ports:
+            - '8123:8123'
+            - '9000:9000'
+        volumes:
+            - clickhouse-data:/var/lib/clickhouse
+            - clickhouse-logs:/var/log/clickhouse-server
+
+    collector:
+        logging: *local-logging
+        restart: on-failure
+        image: otel/opentelemetry-collector-contrib:0.128.0
+        container_name: collector
+        ports:
+            - '4317:4317'
+            - '4318:4318'
+            - '8888:8888'
+        depends_on:
+            - clickhouse
+            - kafka
+
+    # Application Services
+    backend:
+        container_name: backend
+        image: ${BACKEND_IMAGE_NAME-ghcr.io/highlight/highlight-backend:latest}
+        restart: on-failure
+        ports:
+            - '8082:8082'
+        volumes:
+            - highlight-data:/highlight-data
+        depends_on:
+            postgres:
+                condition: service_healthy
+            redis:
+                condition: service_started
+            clickhouse:
+                condition: service_started
+            kafka:
+                condition: service_started
+        environment:
+            # Domain Configuration
+            REACT_APP_FRONTEND_URI: https://first.sume.one
+            REACT_APP_PRIVATE_GRAPH_URI: https://first.sume.one:8082/private
+            REACT_APP_PUBLIC_GRAPH_URI: https://first.sume.one:8082/public
+            
+            # Admin Configuration
+            ADMIN_PASSWORD: password
+            REACT_APP_AUTH_MODE: password
+            
+            # Database Configuration
+            PSQL_HOST: postgres
+            PSQL_PORT: 5432
+            PSQL_DB: postgres
+            PSQL_USER: postgres
+            PSQL_PASSWORD: ''
+            
+            # Redis Configuration
+            REDIS_EVENTS_STAGING_ENDPOINT: redis:6379
+            REDIS_PASSWORD: redispassword
+            
+            # ClickHouse Configuration
+            CLICKHOUSE_ADDRESS: clickhouse:9000
+            CLICKHOUSE_DATABASE: default
+            
+            # Kafka Configuration
+            KAFKA_SERVERS: kafka:9092
+            
+            # OpenTelemetry Configuration
+            OTLP_ENDPOINT: http://collector:4318
+            
+            # Application Configuration
+            IN_DOCKER: 'true'
+            IN_DOCKER_GO: 'true'
+            ON_PREM: 'true'
+            SSL: 'false'
+            ENVIRONMENT: dev
+            
+            # Hobby mode - no license required
+            LICENSE_KEY: ''
+        healthcheck:
+            test: ['CMD-SHELL', 'curl -f http://localhost:8082/health || exit 1']
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    frontend:
+        container_name: frontend
+        image: ${FRONTEND_IMAGE_NAME-ghcr.io/highlight/highlight-frontend:latest}
+        restart: on-failure
+        ports:
+            - '3001:3000'
+            - '6006:6006'
+            - '8081:8080'
+        depends_on:
+            backend:
+                condition: service_healthy
+        environment:
+            # Domain Configuration
+            REACT_APP_FRONTEND_URI: https://first.sume.one
+            REACT_APP_PRIVATE_GRAPH_URI: https://first.sume.one:8082/private
+            REACT_APP_PUBLIC_GRAPH_URI: https://first.sume.one:8082/public
+            REACT_APP_OTLP_ENDPOINT: https://first.sume.one:4318
+            
+            # Application Configuration
+            REACT_APP_IN_DOCKER: 'true'
+            REACT_APP_AUTH_MODE: password
+            SSL: 'false'
+
+volumes:
+    highlight-data:
+    postgres-data:
+    clickhouse-data:
+    clickhouse-logs:
+    redis-data:
+    kafka-data:
+    zoo-log:
+    zoo-data:
+
+networks:
+    default:
+        name: highlight-network
+
